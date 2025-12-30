@@ -16,8 +16,6 @@ const worker = new Worker(
     async (job) => {
         const { fileId, filePath } = job.data as JobData;
 
-        logger.info(`[Job ${job.id}] Parsing SAP Excel`);
-
         let currentSystemId: string | null = null;
         let currentComponentId: string | null = null;
 
@@ -40,7 +38,7 @@ const worker = new Worker(
             for (const raw of rows) {
                 const row = normalizeSapRow(raw, schema);
 
-                // ───────────────── SYSTEM ─────────────────
+                // ───── SYSTEM ─────
                 if (row.sid) {
                     const system = await prisma.sapSystem.upsert({
                         where: { sid: row.sid },
@@ -61,26 +59,22 @@ const worker = new Worker(
 
                 if (!currentSystemId) continue;
 
-                // ─────────────── COMPONENT ────────────────
+                // ───── COMPONENT ─────
                 if (row.componentName && row.componentVersion) {
                     const component = await prisma.sapComponent.upsert({
                         where: {
-                            systemId_componentName_version: {
+                            systemId_name_version: {
                                 systemId: currentSystemId,
-                                componentName: row.componentName,
+                                name: row.componentName,
                                 version: row.componentVersion,
                             },
                         },
                         update: {},
                         create: {
                             systemId: currentSystemId,
-                            componentName: row.componentName,
-                            installedVersion: row.componentVersion,
+                            name: row.componentName,
+                            version: row.componentVersion,
                             mainProduct: row.mainProduct,
-                            vendor: row.vendor,
-                            database: row.database,
-                            os: row.os,
-                            fileId,
                         },
                     });
 
@@ -89,7 +83,7 @@ const worker = new Worker(
 
                 if (!currentComponentId) continue;
 
-                // ───────────── SUB-COMPONENT ──────────────
+                // ───── SUB-COMPONENT ─────
                 if (row.subComponentName) {
                     await prisma.sapSubComponent.create({
                         data: {
@@ -110,7 +104,7 @@ const worker = new Worker(
                 data: { status: "PARSED" },
             });
 
-            logger.info(`[Job ${job.id}] SAP Excel parsed successfully`);
+            logger.info(`[Job ${job.id}] SAP file parsed`);
         } catch (err: any) {
             logger.error(err);
 

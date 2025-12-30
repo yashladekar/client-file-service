@@ -30,13 +30,15 @@ model SapComponent {
   systemId String
   system   SapSystem @relation(fields: [systemId], references: [id])
 
-  name        String // e.g. SAP NetWeaver
+  name        String
   version     String
   mainProduct String?
 
   subComponents SapSubComponent[]
 
   createdAt DateTime @default(now())
+
+  @@unique([systemId, name, version])
 }
 
 model SapSubComponent {
