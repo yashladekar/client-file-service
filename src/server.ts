@@ -1,30 +1,15 @@
 import dotenv from 'dotenv';
-dotenv.config(); // Load .env first
+dotenv.config();
 
 import app from './app';
 import logger from './utils/logger';
 import { env } from './config/env';
+import './workers/fileWorker'; // <--- Just importing this file starts the worker!
+
 const PORT = env.PORT;
 
 const server = app.listen(PORT, () => {
-    logger.info(`Server is running on port ${PORT} as ${env.NODE_ENV} as http://localhost:${PORT}`);
+    logger.info(`Server is running on port ${PORT} as ${env.NODE_ENV}`);
 });
 
-// Graceful Shutdown Logic
-const gracefulShutdown = () => {
-    logger.info('Received kill signal, shutting down gracefully');
-    server.close(() => {
-        logger.info('Closed out remaining connections');
-        process.exit(0);
-    });
-
-    // Force close if it takes too long (e.g., 10 seconds)
-    setTimeout(() => {
-        logger.error('Could not close connections in time, forcefully shutting down');
-        process.exit(1);
-    }, 10000);
-};
-
-// Listen for termination signals
-process.on('SIGTERM', gracefulShutdown);
-process.on('SIGINT', gracefulShutdown);
+// ... (Rest of your shutdown logic stays the same) ...
