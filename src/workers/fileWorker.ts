@@ -3,77 +3,124 @@ import xlsx from "xlsx";
 import fs from "fs";
 import prisma from "../config/db";
 import { connection } from "../config/redis";
-import { clientRowSchema } from "../schemas/clientSchema";
+import { normalizeSapRow, detectSchema } from "../utils/excelNormalizer";
 import logger from "../utils/logger";
 
-const worker = new Worker("file-import-queue", async (job) => {
-    const { fileId, filePath } = job.data;
-    logger.info(`[Job ${job.id}] Processing file: ${fileId}`);
+interface JobData {
+    fileId: string;
+    filePath: string;
+}
 
-    try {
-        // 1. Mark as Processing
-        await prisma.fileUpload.update({
-            where: { id: fileId },
-            data: { status: "PROCESSING" },
-        });
+const worker = new Worker(
+    "file-import-queue",
+    async (job) => {
+        const { fileId, filePath } = job.data as JobData;
 
-        // 2. Read File
-        if (!fs.existsSync(filePath)) throw new Error("File not found on disk");
+        logger.info(`[Job ${job.id}] Parsing SAP Excel`);
 
-        const buffer = fs.readFileSync(filePath);
-        const workbook = xlsx.read(buffer, { type: "buffer" });
-        const sheetName = workbook.SheetNames[0];
-        const rawData = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName]);
+        let currentSystemId: string | null = null;
+        let currentComponentId: string | null = null;
 
-        // 3. Validate & Transform
-        const validRecords = [];
-        const errors = [];
+        try {
+            await prisma.fileUpload.update({
+                where: { id: fileId },
+                data: { status: "PROCESSING" },
+            });
 
-        for (const [index, row] of rawData.entries()) {
-            const result = clientRowSchema.safeParse(row);
-            if (result.success) {
-                validRecords.push(result.data);
-            } else {
-                errors.push({ row: index + 2, error: result.error.errors[0].message });
+            const buffer = fs.readFileSync(filePath);
+            const workbook = xlsx.read(buffer, { type: "buffer" });
+            const sheet = workbook.Sheets[workbook.SheetNames[0]];
+
+            const rows = xlsx.utils.sheet_to_json<Record<string, any>>(sheet, {
+                defval: null,
+            });
+
+            const schema = detectSchema(rows[0]);
+
+            for (const raw of rows) {
+                const row = normalizeSapRow(raw, schema);
+
+                // ───────────────── SYSTEM ─────────────────
+                if (row.sid) {
+                    const system = await prisma.sapSystem.upsert({
+                        where: { sid: row.sid },
+                        update: {
+                            vendor: row.vendor,
+                            location: row.location,
+                            landscape: row.landscape,
+                        },
+                        create: {
+                            sid: row.sid,
+                            vendor: row.vendor,
+                            location: row.location,
+                            landscape: row.landscape,
+                        },
+                    });
+                    currentSystemId = system.id;
+                }
+
+                if (!currentSystemId) continue;
+
+                // ─────────────── COMPONENT ────────────────
+                if (row.componentName && row.componentVersion) {
+                    const component = await prisma.sapComponent.upsert({
+                        where: {
+                            systemId_componentName_version: {
+                                systemId: currentSystemId,
+                                componentName: row.componentName,
+                                version: row.componentVersion,
+                            },
+                        },
+                        update: {},
+                        create: {
+                            systemId: currentSystemId,
+                            componentName: row.componentName,
+                            installedVersion: row.componentVersion,
+                            mainProduct: row.mainProduct,
+                            vendor: row.vendor,
+                            database: row.database,
+                            os: row.os,
+                            fileId,
+                        },
+                    });
+
+                    currentComponentId = component.id;
+                }
+
+                if (!currentComponentId) continue;
+
+                // ───────────── SUB-COMPONENT ──────────────
+                if (row.subComponentName) {
+                    await prisma.sapSubComponent.create({
+                        data: {
+                            componentId: currentComponentId,
+                            name: row.subComponentName,
+                            version: row.subComponentVersion,
+                            vendor: row.vendor,
+                            os: row.os,
+                        },
+                    });
+                }
             }
-        }
 
-        // 4. Bulk Insert (Transactional)
-        if (validRecords.length > 0) {
-            // Prisma createMany is faster for bulk operations
-            await prisma.clientData.createMany({
-                data: validRecords.map(r => ({
-                    name: r.Name,
-                    email: r.Email,
-                    phone: r.Phone,
-                    fileId: fileId
-                })),
-                skipDuplicates: true // Skip if email already exists
+            fs.unlinkSync(filePath);
+
+            await prisma.fileUpload.update({
+                where: { id: fileId },
+                data: { status: "PARSED" },
+            });
+
+            logger.info(`[Job ${job.id}] SAP Excel parsed successfully`);
+        } catch (err: any) {
+            logger.error(err);
+
+            await prisma.fileUpload.update({
+                where: { id: fileId },
+                data: { status: "FAILED", error: err.message },
             });
         }
-
-        // 5. Cleanup & Success
-        fs.unlinkSync(filePath); // Delete local file
-
-        await prisma.fileUpload.update({
-            where: { id: fileId },
-            data: { status: "PARSED", error: errors.length > 0 ? `${errors.length} rows failed` : null }
-        });
-
-        logger.info(`[Job ${job.id}] Completed. Imported: ${validRecords.length}, Failed: ${errors.length}`);
-
-    } catch (error: any) {
-        logger.error(`[Job ${job.id}] Failed: ${error.message}`);
-
-        await prisma.fileUpload.update({
-            where: { id: fileId },
-            data: { status: "FAILED", error: error.message }
-        });
-
-        // Don't throw if you want the job to be marked "completed" in BullMQ 
-        // even if the business logic failed. Throwing triggers BullMQ retries.
-    }
-
-}, { connection, concurrency: 5 }); // Process 5 files at once
+    },
+    { connection, concurrency: 2 }
+);
 
 export default worker;

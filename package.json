@@ -12,6 +12,7 @@
   "license": "ISC",
   "packageManager": "pnpm@10.22.0",
   "dependencies": {
+    "@prisma/adapter-pg": "^7.2.0",
     "@prisma/client": "^7.2.0",
     "bullmq": "^5.66.4",
     "cors": "^2.8.5",

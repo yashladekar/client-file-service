@@ -13,23 +13,52 @@ datasource db {
   provider = "postgresql"
 }
 
+model SapSystem {
+  id        String   @id @default(uuid())
+  sid       String   @unique
+  landscape String? // DEV / QA / PRD
+  vendor    String?
+  location  String?
+  createdAt DateTime @default(now())
+
+  components SapComponent[]
+}
+
+model SapComponent {
+  id String @id @default(uuid())
+
+  systemId String
+  system   SapSystem @relation(fields: [systemId], references: [id])
+
+  name        String // e.g. SAP NetWeaver
+  version     String
+  mainProduct String?
+
+  subComponents SapSubComponent[]
+
+  createdAt DateTime @default(now())
+}
+
+model SapSubComponent {
+  id String @id @default(uuid())
+
+  componentId String
+  component   SapComponent @relation(fields: [componentId], references: [id])
+
+  name    String // Kernel / DB / Java / ICM
+  version String?
+  vendor  String?
+  os      String?
+
+  createdAt DateTime @default(now())
+}
+
 model FileUpload {
   id        String     @id @default(uuid())
   filename  String
-  path      String
   status    FileStatus @default(UPLOADED)
   error     String?
   createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
-}
-
-model ClientData {
-  id     Int     @id @default(autoincrement())
-  name   String
-  email  String  @unique
-  phone  String?
-  // Add other fields matching your Excel columns
-  fileId String? // Optional: link data back to the source file
 }
 
 enum FileStatus {
